@@ -1,9 +1,3 @@
-//
-//  LoanApplicationTests.swift
-//  LoanApplicationTests
-//
-//  Created by Victor Mutethia on 05/06/2026.
-//
 
 import Testing
 @testable import LoanApplication
