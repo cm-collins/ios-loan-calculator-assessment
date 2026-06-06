@@ -7,7 +7,7 @@ The app allows a user to view available loan products, apply for a loan, review 
 
 ## Features
 
-* Loan product listing
+* Loan product listingP
 * Loan application form
 * Input validation and inline error messages
 * Decimal-based loan calculation
