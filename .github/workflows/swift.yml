@@ -1,103 +1,147 @@
-# .github/workflows/swift.yml
-# Builds the LoanApplication Xcode project and runs tests on macOS runners
+# Builds the LoanApplication Xcode project and runs unit tests on macOS.
 
 name: Xcode CI
 
 on:
   push:
-    branches: [ "main" ]
+    branches: [main]
+    paths:
+      - "LoanApplication/**"
+      - "LoanApplicationTests/**"
+      - "LoanApplication.xcodeproj/**"
+      - ".github/workflows/swift.yml"
   pull_request:
-    branches: [ "main" ]
+    branches: [main]
+    paths:
+      - "LoanApplication/**"
+      - "LoanApplicationTests/**"
+      - "LoanApplication.xcodeproj/**"
+      - ".github/workflows/swift.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  DEVELOPER_DIR: /Applications/Xcode_16.4.app/Contents/Developer
+  DERIVED_DATA_PATH: build/derived_data
 
 jobs:
-  build:
-    runs-on: macos-latest
-    timeout-minutes: 60
+  test:
+    runs-on: macos-15
+    timeout-minutes: 30
 
     steps:
-    - name: Checkout
-      uses: actions/checkout@v4
+      - name: Checkout
+        uses: actions/checkout@v6
 
-    - name: Prepare simulator
-      run: |
-        set -o pipefail
-        xcrun simctl shutdown all || true
-        xcrun simctl erase all || true
+      - name: Verify Xcode
+        run: xcodebuild -version
 
-    - name: Select simulator
-      run: |
-        set -o pipefail
-        # Deterministic selection using simctl JSON output and python parsing to avoid shell/awk quoting issues
-        SELECTED_NAME=""
-        SELECTED_OS=""
+      - name: Select simulator
+        shell: bash
+        run: |
+          set -euo pipefail
 
-        eval "$(xcrun simctl list devices available -j | python3 - <<'PY'
-import sys, json
-prefs = ["iPhone 14", "iPhone 13", "iPhone 12", "iPhone 11", "iPhone SE (3rd generation)"]
-try:
-    data = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-devices = data.get('devices', {})
-# Prefer the ordered list of device names
-for pref in prefs:
-    for runtime, devs in devices.items():
-        for d in devs:
-            name = d.get('name')
-            avail = d.get('availability', '').lower()
-            if name == pref and 'available' in avail:
-                print(f"SELECTED_NAME={repr(name)}")
-                print(f"SELECTED_OS={repr(runtime)}")
-                sys.exit(0)
-# Fallback: first available iPhone
-for runtime, devs in devices.items():
-    for d in devs:
-        name = d.get('name')
-        avail = d.get('availability', '').lower()
-        if name and 'iphone' in name.lower() and 'available' in avail:
-            print(f"SELECTED_NAME={repr(name)}")
-            print(f"SELECTED_OS={repr(runtime)}")
-            sys.exit(0)
-# No device found -> print nothing
-PY
-)"
+          xcrun simctl shutdown all || true
 
-        if [ -z "$SELECTED_NAME" ]; then
-          echo "No available iPhone simulators found" >&2
-          exit 1
-        fi
+          SIMULATOR_UDID="$(
+            xcrun simctl list devices available --json |
+              python3 -c '
+          import json
+          import sys
 
-        if [ -z "$SELECTED_OS" ]; then
-          echo "Warning: could not determine simulator OS runtime; using default DESTINATION without OS"
-          echo "DESTINATION=platform=iOS Simulator,name=$SELECTED_NAME" >> $GITHUB_ENV
-        else
-          echo "DESTINATION=platform=iOS Simulator,name=$SELECTED_NAME,OS=$SELECTED_OS" >> $GITHUB_ENV
-        fi
+          devices_by_runtime = json.load(sys.stdin).get("devices", {})
+          preferred_runtimes = [
+              "com.apple.CoreSimulator.SimRuntime.iOS-18-5",
+          ]
+          preferred_names = [
+              "iPhone 16",
+              "iPhone 16 Pro",
+              "iPhone 16e",
+              "iPhone SE (3rd generation)",
+          ]
 
-    - name: Build for testing
-      env:
-        ACTIONS_ALLOW_UNSECURE_COMMANDS: "true"
-      run: |
-        set -o pipefail
-        xcodebuild -project LoanApplication.xcodeproj \
-          -scheme LoanApplication \
-          -destination "$DESTINATION" \
-          -derivedDataPath build/derived_data \
-          clean build-for-testing \
-          CODE_SIGNING_ALLOWED=NO \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO
+          def available_iphones(runtime):
+              return [
+                  device
+                  for device in devices_by_runtime.get(runtime, [])
+                  if device.get("isAvailable", True)
+                  and device.get("name", "").startswith("iPhone")
+                  and device.get("udid")
+              ]
 
-    - name: Run tests
-      env:
-        ACTIONS_ALLOW_UNSECURE_COMMANDS: "true"
-      run: |
-        set -o pipefail
-        xcodebuild -project LoanApplication.xcodeproj \
-          -scheme LoanApplication \
-          -destination "$DESTINATION" \
-          -derivedDataPath build/derived_data \
-          test-without-building \
-          CODE_SIGNING_ALLOWED=NO \
-          CODE_SIGN_IDENTITY="" \
-          CODE_SIGNING_REQUIRED=NO
+          for runtime in preferred_runtimes:
+              devices = available_iphones(runtime)
+              for name in preferred_names:
+                  for device in devices:
+                      if device["name"] == name:
+                          print(device["udid"])
+                          sys.exit(0)
+
+          sys.exit("No available iOS 18.5 iPhone simulator was found")
+          '
+          )"
+
+          echo "Using simulator: $SIMULATOR_UDID"
+          echo "SIMULATOR_UDID=$SIMULATOR_UDID" >> "$GITHUB_ENV"
+
+      - name: Build unit tests
+        run: |
+          set -euo pipefail
+
+          xcodebuild \
+            -project LoanApplication.xcodeproj \
+            -scheme LoanApplication \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -only-testing:LoanApplicationTests \
+            -enableCodeCoverage YES \
+            clean build-for-testing \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run unit tests
+        run: |
+          set -euo pipefail
+
+          xcodebuild \
+            -project LoanApplication.xcodeproj \
+            -scheme LoanApplication \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$DERIVED_DATA_PATH" \
+            -only-testing:LoanApplicationTests \
+            -enableCodeCoverage YES \
+            -resultBundlePath build/TestResults.xcresult \
+            test-without-building \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Collect failure diagnostics
+        if: failure()
+        run: |
+          mkdir -p build
+
+          {
+            echo "## Xcode"
+            xcodebuild -version
+            echo
+            echo "## Selected simulator"
+            xcrun simctl list devices | grep "$SIMULATOR_UDID" || true
+            echo
+            echo "## Booted simulators"
+            xcrun simctl list devices | grep Booted || true
+          } | tee build/ci-diagnostics.txt
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ github.run_attempt }}
+          path: |
+            build/TestResults.xcresult
+            build/ci-diagnostics.txt
+          if-no-files-found: warn
+          retention-days: 7
