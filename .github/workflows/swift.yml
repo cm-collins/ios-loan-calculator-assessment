@@ -24,6 +24,28 @@ jobs:
         xcrun simctl shutdown all || true
         xcrun simctl erase all || true
 
+    - name: Select simulator
+      run: |
+        set -o pipefail
+        SELECTED=""
+        for name in "iPhone 14" "iPhone 13" "iPhone 12" "iPhone 11" "iPhone SE (3rd generation)"; do
+          if xcrun simctl list devices available | grep -F "$name" >/dev/null 2>&1; then
+            echo "Found simulator: $name"
+            SELECTED="$name"
+            break
+          fi
+        done
+        if [ -z "$SELECTED" ]; then
+          # fallback: pick the first available iPhone device name
+          SELECTED=$(xcrun simctl list devices available | awk -F '(' '/iPhone/ {gsub(/^[ \t]+|[ \t]+$/,"",$1); print $1; exit}')
+          if [ -z "$SELECTED" ]; then
+            echo "No available iPhone simulators found" >&2
+            exit 1
+          fi
+          echo "Using fallback simulator: $SELECTED"
+        fi
+        echo "DESTINATION=platform=iOS Simulator,name=$SELECTED" >> $GITHUB_ENV
+
     - name: Build
       env:
         ACTIONS_ALLOW_UNSECURE_COMMANDS: "true"
@@ -31,7 +53,7 @@ jobs:
         set -o pipefail
         xcodebuild -project LoanApplication.xcodeproj \
           -scheme LoanApplication \
-          -destination 'platform=iOS Simulator,name=iPhone 14' \
+          -destination "$DESTINATION" \
           -derivedDataPath build/derived_data \
           clean build \
           CODE_SIGNING_ALLOWED=NO \
@@ -45,7 +67,7 @@ jobs:
         set -o pipefail
         xcodebuild -project LoanApplication.xcodeproj \
           -scheme LoanApplication \
-          -destination 'platform=iOS Simulator,name=iPhone 14' \
+          -destination "$DESTINATION" \
           -derivedDataPath build/derived_data \
           test \
           CODE_SIGNING_ALLOWED=NO \
