@@ -27,25 +27,46 @@ jobs:
     - name: Select simulator
       run: |
         set -o pipefail
+        # Deterministic selection using simctl JSON output and python parsing to avoid shell/awk quoting issues
         SELECTED_NAME=""
         SELECTED_OS=""
-        for name in "iPhone 14" "iPhone 13" "iPhone 12" "iPhone 11" "iPhone SE (3rd generation)"; do
-          if xcrun simctl list devices available | grep -F "$name" >/dev/null 2>&1; then
-            SELECTED_NAME="$name"
-            SELECTED_OS=$(xcrun simctl list devices available | awk -F'[()]' "/$name/ {gsub(/^[ \t]+|[ \t]+$/,\"\",$2); print $2; exit}")
-            break
-          fi
-        done
-        if [ -z "$SELECTED_NAME" ]; then
-          SELECTED_NAME=$(xcrun simctl list devices available | awk -F '(' '/iPhone/ {gsub(/^[ \t]+|[ \t]+$/,"",$1); print $1; exit}')
-          if [ -n "$SELECTED_NAME" ]; then
-            SELECTED_OS=$(xcrun simctl list devices available | awk -F'[()]' "/$SELECTED_NAME/ {gsub(/^[ \t]+|[ \t]+$/,\"\",$2); print $2; exit}")
-          fi
-        fi
+
+        eval "$(xcrun simctl list devices available -j | python3 - <<'PY'
+import sys, json
+prefs = ["iPhone 14", "iPhone 13", "iPhone 12", "iPhone 11", "iPhone SE (3rd generation)"]
+try:
+    data = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+devices = data.get('devices', {})
+# Prefer the ordered list of device names
+for pref in prefs:
+    for runtime, devs in devices.items():
+        for d in devs:
+            name = d.get('name')
+            avail = d.get('availability', '').lower()
+            if name == pref and 'available' in avail:
+                print(f"SELECTED_NAME={repr(name)}")
+                print(f"SELECTED_OS={repr(runtime)}")
+                sys.exit(0)
+# Fallback: first available iPhone
+for runtime, devs in devices.items():
+    for d in devs:
+        name = d.get('name')
+        avail = d.get('availability', '').lower()
+        if name and 'iphone' in name.lower() and 'available' in avail:
+            print(f"SELECTED_NAME={repr(name)}")
+            print(f"SELECTED_OS={repr(runtime)}")
+            sys.exit(0)
+# No device found -> print nothing
+PY
+)"
+
         if [ -z "$SELECTED_NAME" ]; then
           echo "No available iPhone simulators found" >&2
           exit 1
         fi
+
         if [ -z "$SELECTED_OS" ]; then
           echo "Warning: could not determine simulator OS runtime; using default DESTINATION without OS"
           echo "DESTINATION=platform=iOS Simulator,name=$SELECTED_NAME" >> $GITHUB_ENV
